@@ -74,6 +74,8 @@ def _startup():
     jobs.start()
     live.start()
     posting.start()
+    if not config.ACCOUNTS and accounts.zernio_key():
+        threading.Thread(target=lambda: _quiet(accounts.zernio_sync), daemon=True).start()
     from . import updates
     updates.start()                  # looks for a newer PeakCut every minute, in the background
 
@@ -1620,6 +1622,27 @@ def yt_cookies_put(request: Request, body: dict = Body(...)):
             f.chmod(0o600)
     media._yt_refused_until = 0.0        # try YouTube again straight away
     return yt_cookies_get(request)
+
+
+# ---------------------------------------------------------------- Zernio publishing
+@app.get("/api/zernio/status")
+def zernio_status():
+    key = accounts.zernio_key()
+    hint = f"{key[:6]}…{key[-4:]}" if len(key) > 10 else ("Configured" if key else "")
+    return {"ready": bool(key), "hint": hint}
+
+
+@app.post("/api/zernio/save")
+def zernio_save(body: dict = Body(...)):
+    key = str(body.get("key") or "").strip()
+    accounts.save_zernio_key(key)
+    return {"ok": True, "accounts": accounts.list_accounts()}
+
+
+@app.post("/api/zernio/sync")
+def zernio_sync():
+    synced = accounts.zernio_sync()
+    return {"ok": True, "count": len(synced), "accounts": accounts.list_accounts()}
 
 
 @app.post("/api/posts")

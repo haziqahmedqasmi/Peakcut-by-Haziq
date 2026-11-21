@@ -2181,9 +2181,31 @@ async function drawSettings() {
           ${card("youtube", "YouTube", yt, "#FF0000", "Post clips to your channel as Shorts.")}
           ${card("instagram", "Instagram", ig, "linear-gradient(45deg,#F58529,#DD2A7B,#8134AF)", "Post clips as Reels. Needs a Creator or Business account.")}
           ${card("tiktok", "TikTok", tt, "#000", "Post clips straight to your TikTok.")}
-        </div></section>${admin ? await ytCookiesCard(yt) : ""}`;
+        </div></section>${await zernioCard()}${admin ? await ytCookiesCard(yt) : ""}`;
     }
   } catch (e) { body.innerHTML = `<div class="set-load">${esc(e.message)}</div>`; }
+}
+async function zernioCard() {
+  const st = await api("/api/zernio/status").catch(() => ({ready: false, hint: ""}));
+  const open = S.setupOpen === "zernio";
+  const zLogo = '<svg viewBox="0 0 24 24"><path fill="#fff" d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>';
+  const zAccs = (S.accounts || []).filter(a => a.detail && a.detail.includes("Zernio"));
+  const act = `<button class="btn sm ${st.ready ? "ghost" : "primary"}" data-act="appsetup" data-p="zernio">${ic("cog")}${st.ready ? "Settings" : "Connect Zernio"}</button>`
+    + (st.ready ? `<button class="btn sm primary" data-act="zerniosync">Sync channels</button>` : "");
+  const panel = open ? `<div class="appsetup">
+      <p class="sub">Zernio is an all-in-one social posting service. Enter your API key to publish directly to your connected YouTube and Instagram channels without configuring OAuth apps.</p>
+      <label class="f">Zernio API Key<input id="zernio_key" type="password" placeholder="${st.ready ? "Saved: " + esc(st.hint) + ". Paste a new one to replace it" : "sk_..."}" autocomplete="off" spellcheck="false"></label>
+      <div class="row">
+        <button class="btn primary" data-act="zerniosave">Save & sync channels</button>
+        ${st.ready ? `<button class="btn ghost" data-act="zerniosync">Sync channels now</button>` : ""}
+        <button class="btn ghost" data-act="appsetup" data-p="">Close</button>
+      </div></div>` : "";
+  const listOfZ = zAccs.length ? `<div class="applist">${zAccs.map(a => `<div><span class="pill ok">Connected</span><b>${esc(a.name)}</b><span class="sub">${esc(a.detail || "")}</span>
+      <button class="btn sm ghost" data-act="accremove" data-id="${esc(a.id)}">Disconnect</button></div>`).join("")}</div>` : "";
+  return `<section class="set-sec"><h2>Zernio (All-in-One Publishing)</h2><p class="help">Publish to YouTube & Instagram without complex Meta or Google developer setup.</p>
+    <div class="apps"><div class="appcard"><span class="applogo" style="background:linear-gradient(135deg,#6366f1,#8b5cf6,#ec4899)">${zLogo}</span>
+    <div class="apptx"><b>Zernio</b><span>${st.ready ? "Connected and ready to post clips." : "Enter your Zernio API key to link your social accounts."}</span>${listOfZ}</div>
+    <div class="appact">${act}</div>${panel}</div></div></section>`;
 }
 async function ytCookiesCard(logo) {
   const st = await api("/api/youtube-cookies").catch(() => null);
@@ -2546,6 +2568,20 @@ document.addEventListener("click", async e => {
     if (a === "appsave") {
       await send("/api/apps", {platform: d.p, client_id: $("#app_id").value, client_secret: $("#app_secret").value}, "PUT");
       S.setupOpen = ""; S.status = await api("/api/status"); toast("Saved. People can connect now.", "ok"); return drawSettings();
+    }
+    if (a === "zerniosave") {
+      const key = $("#zernio_key") ? $("#zernio_key").value : "";
+      await send("/api/zernio/save", {key});
+      S.setupOpen = "";
+      await tick();
+      toast("Zernio key saved and channels synced!", "ok");
+      return drawSettings();
+    }
+    if (a === "zerniosync") {
+      const r = await send("/api/zernio/sync", {});
+      await tick();
+      toast(`Synced ${r.count || 0} channel(s) from Zernio.`, "ok");
+      return drawSettings();
     }
     if (a === "bell") return openBell();
     if (a === "feedback") return openFeedback("bug");

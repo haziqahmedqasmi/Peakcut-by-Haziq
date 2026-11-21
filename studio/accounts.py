@@ -5,6 +5,7 @@ platform's own page and come back. For that, whoever runs the server registers o
 (its id and secret), in .env or in the dashboard (Settings, Connected apps, Set up). Those belong to the server,
 never to users."""
 import base64
+import contextlib
 import hashlib
 import hmac
 import json
@@ -12,6 +13,7 @@ import re
 import secrets
 import threading
 import time
+import uuid
 from pathlib import Path
 from urllib.parse import urlencode
 
@@ -577,3 +579,150 @@ def tiktok_upload(acc, path: Path, caption: str, privacy: str = "public"):
         acc["detail"] = "Posts are private until this server's TikTok app is reviewed"
         _put(acc)
     return str(ids[0]) if ids else box["publish_id"], url
+
+
+# ------------------------------------------------------------------ Zernio (All-in-one publishing)
+def zernio_key() -> str:
+    saved = _apps_saved().get("zernio") or {}
+    if saved.get("key"):
+        return saved["key"].strip()
+    return config.zernio_key()
+
+
+def save_zernio_key(key: str):
+    key = str(key or "").strip()
+    with _lock:
+        data = dict(_apps_saved())
+        if key:
+            data["zernio"] = {"key": key}
+        else:
+            data.pop("zernio", None)
+        tmp = _apps_file().with_suffix(".tmp")
+        tmp.write_text(json.dumps(data), encoding="utf-8")
+        with contextlib.suppress(OSError):
+            tmp.chmod(0o600)
+        tmp.replace(_apps_file())
+        _apps_seen["at"] = None
+    if key:
+        zernio_sync()
+
+
+def _zernio_sync_inner(key: str) -> list:
+    headers = {"Authorization": f"Bearer {key}"}
+    r = _check(httpx.get("https://zernio.com/api/v1/accounts", headers=headers, timeout=15), "Fetching Zernio accounts")
+    data = r.json()
+    z_accounts = data.get("accounts", [])
+    synced = []
+    for za in z_accounts:
+        zid = za.get("_id")
+        pf = za.get("platform")
+        if not zid or pf not in PLATFORM_NAMES:
+            continue
+        name = za.get("displayName") or za.get("name") or za.get("username") or "Account"
+        acc = {
+            "id": f"zernio_{zid}",
+            "platform": pf,
+            "provider": "zernio",
+            "zernio_id": zid,
+            "name": name,
+            "detail": f"{PLATFORM_NAMES.get(pf, pf)} via Zernio",
+            "added": time.time(),
+        }
+        _put(acc)
+        synced.append(acc)
+    return synced
+
+
+def zernio_sync() -> list:
+    key = zernio_key()
+    if not key:
+        return []
+    u = ctx.uid_or_none()
+    if not u:
+        if config.ACCOUNTS:
+            return []
+        from . import auth, db
+        db.init()
+        try:
+            u = auth.local_user().id
+        except Exception:
+            return []
+        with ctx.as_user(u):
+            return _zernio_sync_inner(key)
+    return _zernio_sync_inner(key)
+
+
+def zernio_upload(acc, path: Path, title: str, description: str, clip: dict, creator: dict):
+    key = zernio_key()
+    if not key:
+        raise ValueError("Zernio API key is not configured. Add it in Settings -> Connected apps.")
+    headers = {"Authorization": f"Bearer {key}"}
+    size = path.stat().st_size
+
+    # 1. Presign upload URL
+    presign_res = _check(httpx.post(
+        "https://zernio.com/api/v1/media/presign",
+        headers=headers,
+        json={"filename": path.name, "contentType": "video/mp4", "size": size},
+        timeout=60,
+    ), "Zernio media presign").json()
+
+    upload_url = presign_res.get("uploadUrl")
+    public_url = presign_res.get("publicUrl")
+    if not upload_url or not public_url:
+        raise RuntimeError("Zernio did not return upload URLs.")
+
+    # 2. Upload video binary
+    with path.open("rb") as f:
+        _check(httpx.put(upload_url, content=f.read(), headers={"Content-Type": "video/mp4"}, timeout=900),
+               "Uploading video to Zernio storage")
+
+    # 3. Create post
+    platform = acc["platform"]  # "youtube", "instagram", etc.
+    z_id = acc.get("zernio_id") or acc["id"].replace("zernio_", "")
+    entry = {"platform": platform, "accountId": z_id}
+
+    if platform == "youtube":
+        entry["customContent"] = (description + "\n\n#Shorts").strip()
+        entry["platformSpecificData"] = {
+            "title": re.sub(r"[<>]", "", title)[:100] or "Clip",
+            "visibility": creator.get("privacy", "public"),
+            "categoryId": "20",
+            "madeForKids": False,
+        }
+    else:
+        entry["customContent"] = f"{title}\n\n{description}".strip()
+
+    body = {
+        "content": f"{title}\n\n{description}".strip(),
+        "mediaItems": [{"url": public_url, "type": "video"}],
+        "platforms": [entry],
+        "timezone": getattr(config, "ZERNIO_TIMEZONE", "Asia/Kolkata"),
+        "publishNow": True,
+    }
+
+    idempotency_key = clip.get("zernio_idempotency_key") or str(uuid.uuid4())
+    clip["zernio_idempotency_key"] = idempotency_key
+
+    post_resp = _check(httpx.post(
+        "https://zernio.com/api/v1/posts",
+        headers={**headers, "Idempotency-Key": idempotency_key},
+        json=body,
+        timeout=300,
+    ), "Creating post on Zernio").json()
+
+    post = post_resp.get("post", {})
+    post_id = post.get("_id") or post.get("id")
+    if not post_id:
+        raise RuntimeError("Zernio did not return a post ID.")
+
+    post_url = ""
+    for pf in post.get("platforms", []):
+        if pf.get("platformPostUrl"):
+            post_url = pf["platformPostUrl"]
+            break
+    if not post_url:
+        post_url = "https://zernio.com/dashboard"
+
+    return post_id, post_url
+

@@ -220,6 +220,14 @@ def ai_ready() -> bool:
     return ai.ready()
 
 
+# ---------------------------------------------------------------- Zernio publishing
+ZERNIO_TIMEZONE = env("ZERNIO_TIMEZONE", "Asia/Kolkata")
+
+
+def zernio_key() -> str:
+    return _secret("ZERNIO_API_KEY", "ZERNIO_API_KEY_FILE", r"\S{16,}")
+
+
 # ---------------------------------------------------------------- account emails (see mailer.py)
 SMTP_HOST = env("PEAKCUT_SMTP_HOST", "")
 SMTP_PORT = int(env("PEAKCUT_SMTP_PORT", "587"))

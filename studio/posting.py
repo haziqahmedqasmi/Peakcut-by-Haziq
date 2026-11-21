@@ -119,7 +119,9 @@ def _post(p):
         path = Path(job["dir"]) / "clips" / clip["file"]
         creator = creators.get(job["creator"]) or dict(creators.DEFAULTS, name="clips")
         title, cap = clip.get("title") or clip.get("hook") or "Clip", _caption(clip, creator)
-        if acc["platform"] == "youtube":
+        if acc.get("provider") == "zernio" or str(acc.get("id", "")).startswith("zernio_") or acc.get("zernio_id"):
+            rid, url = accounts.zernio_upload(acc, path, title, cap, clip, creator)
+        elif acc["platform"] == "youtube":
             rid, url = accounts.youtube_upload(acc, path, title, cap + "\n\n#Shorts", clip.get("hashtags", []), creator["privacy"])
         elif acc["platform"] == "instagram":
             rid, url = accounts.instagram_upload(acc, path, f"{title}\n\n{cap}", job["id"])
